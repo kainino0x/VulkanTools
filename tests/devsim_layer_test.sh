@@ -1,4 +1,4 @@
-#! /bin/bash
+#! /bin/bash -x
 # Simple test of devsim layer
 # Uses 'jq' v1.5 (https://stedolan.github.io/jq/) to extract sections of
 # test's JSON output and reformat for consistent comparison with gold file.
@@ -25,7 +25,7 @@ export LD_LIBRARY_PATH=${PWD}/../loader:${LD_LIBRARY_PATH}
 export VK_LAYER_PATH=${PWD}/../layersvt
 export VK_INSTANCE_LAYERS="VK_LAYER_LUNARG_device_simulation"
 
-#export VK_DEVSIM_DEBUG_ENABLE="1"
+export VK_DEVSIM_DEBUG_ENABLE="1"
 #export VK_DEVSIM_EXIT_ON_ERROR="1"
 #export VK_LOADER_DEBUG="all"
 
@@ -47,8 +47,9 @@ diff ${FILENAME_01_GOLD} \
     <(jq -S '{properties,features,memory,queues,formats}' ${FILENAME_01_RESULT}) \
     >> ${FILENAME_01_STDOUT}
 RES=$?
-rm ${FILENAME_01_RESULT}
-rm ${FILENAME_01_STDOUT}
+cat ${FILENAME_01_STDOUT}
+#rm ${FILENAME_01_RESULT}
+#rm ${FILENAME_01_STDOUT}
 
 #############################################################################
 

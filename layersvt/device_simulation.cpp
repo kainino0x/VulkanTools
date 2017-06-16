@@ -1071,6 +1071,7 @@ void JsonLoader::GetValue(const Json::Value &parent, const char *name, VkPhysica
 }
 
 void JsonLoader::GetValue(const Json::Value &parent, int index, DevsimFormatProperties *dest) {
+    DebugPrintf("\t\tJsonLoader::GetValue(VkFormatProperties %d)\n", index);
     const Json::Value value = parent[index];
     if (value.type() != Json::objectValue) {
         return;
@@ -1290,6 +1291,7 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevi
     const auto dt = instance_dispatch_table(physicalDevice);
 
     PhysicalDeviceData *pdd = PhysicalDeviceData::Find(physicalDevice);
+    DebugPrintf("GetPhysicalDeviceQueueFamilyProperties physicalDevice %p pdd %p\n", physicalDevice, pdd);
     if (pdd) {
         EnumerateProperties(static_cast<uint32_t>(pdd->arrayof_queue_family_properties_.size()),
                             pdd->arrayof_queue_family_properties_.data(), pQueueFamilyPropertyCount, pQueueFamilyProperties);
@@ -1315,6 +1317,7 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceFormatProperties(VkPhysicalDevice ph
     const auto dt = instance_dispatch_table(physicalDevice);
 
     PhysicalDeviceData *pdd = PhysicalDeviceData::Find(physicalDevice);
+    DebugPrintf("GetPhysicalDeviceFormatProperties physicalDevice %p pdd %p\n", physicalDevice, pdd);
     if (pdd) {
         const auto iter = pdd->arrayof_format_properties_.find(format);
         *pFormatProperties = (iter != pdd->arrayof_format_properties_.end()) ? iter->second : VkFormatProperties{};

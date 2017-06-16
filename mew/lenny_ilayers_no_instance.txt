@@ -1,0 +1,731 @@
+vkEnumerateInstanceExtensionProperties
+vkEnumerateInstanceLayerProperties
+
+=============================================================================
+
+diff --git a/include/vulkan/vk_layer.h b/include/vulkan/vk_layer.h
+index a7ac291..24b4484 100644
+--- a/include/vulkan/vk_layer.h
++++ b/include/vulkan/vk_layer.h
+@@ -48,6 +48,8 @@
+ #define CURRENT_LOADER_LAYER_INTERFACE_VERSION 2
+ #define MIN_SUPPORTED_LOADER_LAYER_INTERFACE_VERSION 1
+ 
++#define VK_CURRENT_CHAIN_VERSION 1
++
+ // Version negotiation values
+ typedef enum VkNegotiateLayerStructType {
+     LAYER_NEGOTIATE_UNINTIALIZED = 0,
+@@ -138,6 +140,46 @@ extern "C" {
+ 
+ VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct);
+ 
++typedef enum VkChainType
++{
++    VK_CHAIN_TYPE_UNKNOWN = 0,
++    VK_CHAIN_TYPE_ENUMERATE_INSTANCE_EXTENSION_PROPERTIES = 1,
++    VK_CHAIN_TYPE_ENUMERATE_INSTANCE_LAYER_PROPERTIES = 2,
++} VkChainType;
++
++typedef struct VkChainHeader
++{
++    VkChainType type;
++    uint32_t version;
++    uint32_t size;
++} VkChainHeader;
++
++typedef struct VkEnumerateInstanceExtensionPropertiesChain
++{
++    VkChainHeader header;
++    VkResult (VKAPI_PTR *pfnNextLayer)(const struct VkEnumerateInstanceExtensionPropertiesChain*, const char*, uint32_t*, VkExtensionProperties*);
++    const struct VkEnumerateInstanceExtensionPropertiesChain* pNextLink;
++
++#if defined(__cplusplus)
++    inline VkResult CallDown(const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) const {
++        return pfnNextLayer(pNextLink, pLayerName, pPropertyCount, pProperties);
++    }
++#endif
++} VkEnumerateInstanceExtensionPropertiesChain;
++
++typedef struct VkEnumerateInstanceLayerPropertiesChain
++{
++    VkChainHeader header;
++    VkResult (VKAPI_PTR *pfnNextLayer)(const struct VkEnumerateInstanceLayerPropertiesChain*, uint32_t*, VkLayerProperties*);
++    const struct VkEnumerateInstanceLayerPropertiesChain* pNextLink;
++
++#if defined(__cplusplus)
++    inline VkResult CallDown(uint32_t* pPropertyCount, VkLayerProperties* pProperties) const {
++        return pfnNextLayer(pNextLink, pPropertyCount, pProperties);
++    }
++#endif
++} VkEnumerateInstanceLayerPropertiesChain;
++
+ #ifdef __cplusplus
+ }
+ #endif
+
+
+
+
+diff --git a/loader/LoaderAndLayerInterface.md b/loader/LoaderAndLayerInterface.md
+index d2f1e15..f886e56 100644
+--- a/loader/LoaderAndLayerInterface.md
++++ b/loader/LoaderAndLayerInterface.md
+@@ -26,6 +26,7 @@
+     * [Example Code for CreateInstance](#example-code-for-createinstance)
+     * [Example Code for CreateDevice](#example-code-for-createdevice)
+     * [Meta-layers](#meta-layers)
++    * [Pre-Instance Functions](#pre-instance-functions)
+     * [Special Considerations](#special-considerations)
+     * [Layer Manifest File Format](#layer-manifest-file-format)
+     * [Layer Library Versions](#layer-library-versions)
+@@ -771,6 +772,7 @@ In this section we'll discuss how the loader interacts with layers, including:
+   * [Example Code for CreateInstance](#example-code-for-createinstance)
+   * [Example Code for CreateDevice](#example-code-for-createdevice)
+   * [Meta-layers](#meta-layers)
++  * [Pre-Instance Functions](#pre-instance-functions)
+   * [Special Considerations](#special-considerations)
+     * [Associating Private Data with Vulkan Objects Within a Layer](#associating-private-data-with-vulkan-objects-within-a-layer)
+       * [Wrapping](#wrapping)
+@@ -1453,6 +1455,83 @@ The
+ Manifest file formatting necessary to define a meta-layer can be found in the
+ [Layer Manifest File Format](#layer-manifest-file-format) section.
+ 
++#### Pre-Instance Intercepts
++
++Vulkan includes a small number of functions which are called without any dispatchable object.
++Most layers do not intercept these functions, as layers are enabled when an instance is created.
++However, under certain conditions it is possible for a layer to intercept these functions.
++
++In order to intercept the pre-instance functions, several conditions must be met:
++* The layer must be implicit
++* The layer manifest version must be 1.1.2 or later
++* The layer must export the entry point symbols for each intercepted function (Windows only)
++* The layer manifest must specify the name of each intercepted function in a `pre_instance_functions` JSON object
++
++The functions that may be intercepted in this way are:
++* `vkEnumerateInstanceExtensionProperties`
++* `vkEnumerateInstanceLayerProperties`
++
++These functions work differently from all other layer intercept functions, however.
++Other intercept functions have a function prototype identical to that of the function they are intercepting.
++They then rely on using data that was passed to the layer at instance or device creation.
++Because there is no need to create an instance before calling the pre-instance functions, they must use a separate mechanism for constructing the call chain.
++This mechanism consists of an extra parameter that will be passed to the layer intercept function when it is called.
++This parameter will be a struct, defined as follows:
++
++```
++typedef struct Vk...Chain
++{
++    struct {
++        VkChainType type;
++        uint32_t version;
++        uint32_t size;
++    } header;
++    PFN_vkVoidFunction pfnNextLayer;
++    const struct Vk...Chain* pNextLink;
++} Vk...Chain;
++```
++
++The name of each struct is be identical to the name of the function it corresponds to, except that the leading "V" is capitalized, and that the word "Chain" is added to the end.
++For example, the chain for `vkEnumerateInstanceExtensionProperties` is called `VkEnumerateInstanceExtensionPropertiesChain`.
++Furthermore, the `pfnNextLayer` struct member is not actually a void function pointer.
++Its type will be the actual type of each function in the call chain.
++
++Each layer intercept function must have a prototype that is the same as the prototype of the function being intercepted, except that the first parameter must be that function's chain struct (passed as a const pointer).
++For example, a function that wishes to intercept `vkEnumerateInstanceExtensionProperties` would have the prototype:
++
++```
++VkResult InterceptFunctionName(const VkEnumerateInstanceExtensionProperties* pChain,
++    const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties);
++```
++
++The name of the function is arbitrary; it can be anything provided that it is given in the layer manifest file (see [Layer Manifest File Format](#layer-manifest-file-format)).
++The implementation of each intercept functions is responsible for calling the next item in the call chain, using the chain parameter.
++This is done by calling the `pfnNextLayer` member of the chain struct, passing `pNextLink` as the first argument, and passing the remaining function arguments after that.
++For example, a simple implementation for `vkEnumerateInstanceExtensionProperties` that does nothing but call down the chain would look like:
++
++```
++VkResult InterceptFunctionName(const VkEnumerateInstanceExtensionProperties* pChain,
++    const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
++{
++    return pChain->pfnNextLayer(pChain->pNextLink, pLayerName, pPropertyCount, pProperties);
++}
++```
++
++When using a C++ compiler, each chain type also defines a function called `CallDown` which can be used to automatically handle the first argument.
++Implementing the above function using this method would look like:
++
++```
++VkResult InterceptFunctionName(const VkEnumerateInstanceExtensionProperties* pChain,
++    const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
++{
++    return pChain->CallDown(pLayerName, pPropertyCount, pProperties);
++}
++```
++
++Unlike with other functions in layers, the layer may not save any global data between these function calls.
++Because Vulkan does not store any state until an instance has been created, all layer libraries are released at the end of each pre-instance call.
++This means that implicit layers can use pre-instance intercepts to modify data that is returned by the functions, but they cannot be used to record that data.
++
+ #### Special Considerations
+ 
+ 
+@@ -1694,7 +1773,7 @@ Here's an example of a meta-layer manifest file:
+ | JSON Node | Description and Notes | Introspection Query |
+ |:----------------:|--------------------|:----------------:
+ | "file\_format\_version" | Manifest format major.minor.patch version number. | N/A |
+-| | Supported versions are: 1.0.0, 1.0.1, and 1.1.0. | |
++| | Supported versions are: 1.0.0, 1.0.1, 1.1.0, 1.1.1, and 1.1.2. | |
+ | "layer" | The identifier used to group a single layer's information together. | vkEnumerateInstanceLayerProperties |
+ | "layers" | The identifier used to group multiple layers' information together.  This requires a minimum Manifest file format version of 1.0.1.| vkEnumerateInstanceLayerProperties |
+ | "name" | The string used to uniquely identify this layer to applications. | vkEnumerateInstanceLayerProperties |
+@@ -1710,6 +1789,7 @@ Here's an example of a meta-layer manifest file:
+ | "enable\_environment" | **Implicit Layers Only** - **OPTIONAL:** Indicates an environment variable used to enable the Implicit Layer (w/ value of 1).  This environment variable (which should vary with each "version" of the layer) must be set to the given value or else the implicit layer is not loaded. This is for application environments (e.g. Steam) which want to enable a layer(s) only for applications that they launch, and allows for applications run outside of an application environment to not get that implicit layer(s).| N/A |
+ | "disable\_environment" | **Implicit Layers Only** - **REQUIRED:**Indicates an environment variable used to disable the Implicit Layer (w/ value of 1). In rare cases of an application not working with an implicit layer, the application can set this environment variable (before calling Vulkan functions) in order to "blacklist" the layer. This environment variable (which should vary with each "version" of the layer) must be set (not particularly to any value). If both the "enable_environment" and "disable_environment" variables are set, the implicit layer is disabled. | N/A |
+ | "component_layers" | **Meta-layers Only** - Indicates the component layer names that are part of a meta-layer.  The names listed must be the "name" identified in each of the component layer's Mainfest file "name" tag (this is the same as the name of the layer that is passed to the `vkCreateInstance` command).  All component layers must be present on the system and found by the loader in order for this meta-layer to be available and activated. **This field must not be present if "library\_path" is defined** | N/A |
++| "pre_instance_functions" | **Implicit Layers Only** - **OPTIONAL:** Indicates which functions the layer wishes to intercept, that do not require that an instance has been created. This should be an object where each function to be intercepted is defined as a string entry where the key is the Vulkan function name and the value is the name of the intercept function in the layer's dynamic library. Available in layer manifest versions 1.1.2 and up. See [Pre-Instance Functions](#pre-instance-functions) for more information. | vkEnumerateInstance*Properties |
+ 
+ ##### Layer Manifest File Version History
+ 
+
+
+
+
+diff --git a/loader/loader.c b/loader/loader.c
+index dd5e21f..eff0434 100644
+--- a/loader/loader.c
++++ b/loader/loader.c
+@@ -2305,6 +2305,28 @@ typedef struct {
+     uint16_t patch;
+ } layer_json_version;
+ 
++static inline bool is_valid_layer_json_version(const layer_json_version *layer_json) {
++    // Supported versions are: 1.0.0, 1.0.1, and 1.1.0.
++    if ((layer_json->major == 1 && layer_json->minor == 1 && layer_json->patch < 3) ||
++        (layer_json->major == 1 && layer_json->minor == 0 && layer_json->patch < 3)) {
++        return true;
++    }
++    return false;
++}
++
++static inline bool layer_json_supports_layers_tag(const layer_json_version *layer_json) {
++    // Supported versions started in 1.0.1, so anything newer
++    if ((layer_json->major > 1 || layer_json->minor > 0 || layer_json->patch > 1)) {
++        return true;
++    }
++    return false;
++}
++
++static inline bool layer_json_supports_pre_instance_tag(const layer_json_version *layer_json) {
++    // Supported versions started in 1.1.2, so anything newer
++    return layer_json->major > 1 || layer_json->minor > 1 || (layer_json->minor == 1 && layer_json->patch > 1);
++}
++
+ static VkResult loader_read_json_layer(const struct loader_instance *inst, struct loader_layer_list *layer_instance_list,
+                                        cJSON *layer_node, layer_json_version version, cJSON *item, cJSON *disable_environment,
+                                        bool is_implicit, char *filename) {
+@@ -2680,6 +2702,36 @@ static VkResult loader_read_json_layer(const struct loader_instance *inst, struc
+         }
+     }
+ 
++    // Read in the pre-instance stuff
++    cJSON *pre_instance = cJSON_GetObjectItem(layer_node, "pre_instance_functions");
++    if (pre_instance) {
++        if (!layer_json_supports_pre_instance_tag(&version)) {
++            loader_log(inst, VK_DEBUG_REPORT_ERROR_BIT_EXT, 0, "Found pre_instance_functions section in layer from \"%s\". "
++                "This section is only valid in manifest version 1.1.2 or later. The section will be ignored", filename);
++        } else if (!is_implicit) {
++            loader_log(inst, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0, "Found pre_instance_functions section in explicit layer from "
++                "\"%s\". This section is only valid in implicit layers. The section will be ignored", filename);
++        } else {
++            cJSON *inst_ext_json = cJSON_GetObjectItem(pre_instance, "vkEnumerateInstanceExtensionProperties");
++            if (inst_ext_json) {
++                char *inst_ext_name = cJSON_Print(inst_ext_json);
++                size_t len = strlen(inst_ext_name) >= MAX_STRING_SIZE ? MAX_STRING_SIZE - 3: strlen(inst_ext_name) - 2;
++                strncpy(props->pre_instance_functions.enumerate_instance_extension_properties, inst_ext_name + 1, len);
++                props->pre_instance_functions.enumerate_instance_extension_properties[len] = '\0';
++                cJSON_Free(inst_ext_name);
++            }
++
++            cJSON *inst_layer_json = cJSON_GetObjectItem(pre_instance, "vkEnumerateInstanceLayerProperties");
++            if (inst_layer_json) {
++                char *inst_layer_name = cJSON_Print(inst_layer_json);
++                size_t len = strlen(inst_layer_name) >= MAX_STRING_SIZE ? MAX_STRING_SIZE - 3 : strlen(inst_layer_name) - 2;
++                strncpy(props->pre_instance_functions.enumerate_instance_layer_properties, inst_layer_name + 1, len);
++                props->pre_instance_functions.enumerate_instance_layer_properties[len] = '\0';
++                cJSON_Free(inst_layer_name);
++            }
++        }
++    }
++
+     result = VK_SUCCESS;
+ 
+ out:
+@@ -2698,23 +2750,6 @@ out:
+     return result;
+ }
+ 
+-static inline bool is_valid_layer_json_version(const layer_json_version *layer_json) {
+-    // Supported versions are: 1.0.0, 1.0.1, and 1.1.0.
+-    if ((layer_json->major == 1 && layer_json->minor == 1 && layer_json->patch < 2) ||
+-        (layer_json->major == 1 && layer_json->minor == 0 && layer_json->patch < 2)) {
+-        return true;
+-    }
+-    return false;
+-}
+-
+-static inline bool layer_json_supports_layers_tag(const layer_json_version *layer_json) {
+-    // Supported versions started in 1.0.1, so anything newer
+-    if ((layer_json->major > 1 || layer_json->minor > 0 || layer_json->patch > 1)) {
+-        return true;
+-    }
+-    return false;
+-}
+-
+ // Given a cJSON struct (json) of the top level JSON object from layer manifest
+ // file, add entry to the layer_list. Fill out the layer_properties in this list
+ // entry from the input cJSON object.
+@@ -5832,3 +5867,129 @@ VkStringErrorFlags vk_string_validate(const int max_length, const char *utf8) {
+     }
+     return result;
+ }
++
++VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateInstanceExtensionProperties(const VkEnumerateInstanceExtensionPropertiesChain *chain,
++    const char *pLayerName, uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
++
++    struct loader_extension_list *global_ext_list = NULL;
++    struct loader_layer_list instance_layers;
++    struct loader_extension_list local_ext_list;
++    struct loader_icd_tramp_list icd_tramp_list;
++    uint32_t copy_size;
++    VkResult res = VK_SUCCESS;
++
++    //tls_instance = NULL;
++    memset(&local_ext_list, 0, sizeof(local_ext_list));
++    memset(&instance_layers, 0, sizeof(instance_layers));
++    //loader_platform_thread_once(&once_init, loader_initialize);
++
++    // Get layer libraries if needed
++    if (pLayerName && strlen(pLayerName) != 0) {
++        if (vk_string_validate(MaxLoaderStringLength, pLayerName) != VK_STRING_ERROR_NONE) {
++            assert(VK_FALSE &&
++                "vkEnumerateInstanceExtensionProperties:  "
++                "pLayerName is too long or is badly formed");
++            res = VK_ERROR_EXTENSION_NOT_PRESENT;
++            goto out;
++        }
++
++        loader_layer_scan(NULL, &instance_layers);
++        for (uint32_t i = 0; i < instance_layers.count; i++) {
++            struct loader_layer_properties *props = &instance_layers.list[i];
++            if (strcmp(props->info.layerName, pLayerName) == 0) {
++                global_ext_list = &props->instance_extension_list;
++                break;
++            }
++        }
++    } else {
++        // Scan/discover all ICD libraries
++        memset(&icd_tramp_list, 0, sizeof(struct loader_icd_tramp_list));
++        res = loader_icd_scan(NULL, &icd_tramp_list);
++        if (VK_SUCCESS != res) {
++            goto out;
++        }
++        // Get extensions from all ICD's, merge so no duplicates
++        res = loader_get_icd_loader_instance_extensions(NULL, &icd_tramp_list, &local_ext_list);
++        if (VK_SUCCESS != res) {
++            goto out;
++        }
++        loader_scanned_icd_clear(NULL, &icd_tramp_list);
++
++        // Append enabled implicit layers.
++        loader_implicit_layer_scan(NULL, &instance_layers);
++        for (uint32_t i = 0; i < instance_layers.count; i++) {
++            if (!loader_is_implicit_layer_enabled(NULL, &instance_layers.list[i])) {
++                continue;
++            }
++            struct loader_extension_list *ext_list = &instance_layers.list[i].instance_extension_list;
++            loader_add_to_ext_list(NULL, &local_ext_list, ext_list->count, ext_list->list);
++        }
++
++        global_ext_list = &local_ext_list;
++    }
++
++    if (global_ext_list == NULL) {
++        res = VK_ERROR_LAYER_NOT_PRESENT;
++        goto out;
++    }
++
++    if (pProperties == NULL) {
++        *pPropertyCount = global_ext_list->count;
++        goto out;
++    }
++
++    copy_size = *pPropertyCount < global_ext_list->count ? *pPropertyCount : global_ext_list->count;
++    for (uint32_t i = 0; i < copy_size; i++) {
++        memcpy(&pProperties[i], &global_ext_list->list[i], sizeof(VkExtensionProperties));
++    }
++    *pPropertyCount = copy_size;
++
++    if (copy_size < global_ext_list->count) {
++        res = VK_INCOMPLETE;
++        goto out;
++    }
++
++out:
++
++    loader_destroy_generic_list(NULL, (struct loader_generic_list *)&local_ext_list);
++    loader_delete_layer_properties(NULL, &instance_layers);
++    return res;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL terminator_EnumerateInstanceLayerProperties(const VkEnumerateInstanceLayerPropertiesChain *chain,
++    uint32_t *pPropertyCount, VkLayerProperties *pProperties) {
++
++    VkResult result = VK_SUCCESS;
++    struct loader_layer_list instance_layer_list;
++    tls_instance = NULL;
++
++    loader_platform_thread_once(&once_init, loader_initialize);
++
++    uint32_t copy_size;
++
++    // Get layer libraries
++    memset(&instance_layer_list, 0, sizeof(instance_layer_list));
++    loader_layer_scan(NULL, &instance_layer_list);
++
++    if (pProperties == NULL) {
++        *pPropertyCount = instance_layer_list.count;
++        goto out;
++    }
++
++    copy_size = (*pPropertyCount < instance_layer_list.count) ? *pPropertyCount : instance_layer_list.count;
++    for (uint32_t i = 0; i < copy_size; i++) {
++        memcpy(&pProperties[i], &instance_layer_list.list[i].info, sizeof(VkLayerProperties));
++    }
++
++    *pPropertyCount = copy_size;
++
++    if (copy_size < instance_layer_list.count) {
++        result = VK_INCOMPLETE;
++        goto out;
++    }
++
++out:
++
++    loader_delete_layer_properties(NULL, &instance_layer_list);
++    return result;
++}
+
+
+
+
+diff --git a/loader/loader.h b/loader/loader.h
+index 43600f9..aad20eb 100644
+--- a/loader/loader.h
++++ b/loader/loader.h
+@@ -137,6 +137,10 @@ struct loader_layer_properties {
+     struct loader_name_value enable_env_var;
+     uint32_t num_component_layers;
+     char (*component_layer_names)[MAX_STRING_SIZE];
++    struct {
++        char enumerate_instance_extension_properties[MAX_STRING_SIZE];
++        char enumerate_instance_layer_properties[MAX_STRING_SIZE];
++    } pre_instance_functions;
+ };
+ 
+ struct loader_layer_list {
+
+
+
+
+diff --git a/loader/trampoline.c b/loader/trampoline.c
+index da6f0ac..b092cbb 100644
+--- a/loader/trampoline.c
++++ b/loader/trampoline.c
+@@ -91,129 +91,168 @@ LOADER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDev
+     return disp_table->GetDeviceProcAddr(device, pName);
+ }
+ 
+-LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const char *pLayerName,
+-                                                                                    uint32_t *pPropertyCount,
+-                                                                                    VkExtensionProperties *pProperties) {
+-    struct loader_extension_list *global_ext_list = NULL;
+-    struct loader_layer_list instance_layers;
+-    struct loader_extension_list local_ext_list;
+-    struct loader_icd_tramp_list icd_tramp_list;
+-    uint32_t copy_size;
+-    VkResult res = VK_SUCCESS;
++LOADER_EXPORT VKAPI_ATTR VkResult vkEnumerateInstanceExtensionProperties(
++    const char *pLayerName, uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
+ 
+     tls_instance = NULL;
+-    memset(&local_ext_list, 0, sizeof(local_ext_list));
+-    memset(&instance_layers, 0, sizeof(instance_layers));
+     loader_platform_thread_once(&once_init, loader_initialize);
+ 
+-    // Get layer libraries if needed
+-    if (pLayerName && strlen(pLayerName) != 0) {
+-        if (vk_string_validate(MaxLoaderStringLength, pLayerName) != VK_STRING_ERROR_NONE) {
+-            assert(VK_FALSE &&
+-                   "vkEnumerateInstanceExtensionProperties:  "
+-                   "pLayerName is too long or is badly formed");
+-            res = VK_ERROR_EXTENSION_NOT_PRESENT;
+-            goto out;
+-        }
++    // We know we need to call at least the terminator
++    VkResult res = VK_SUCCESS;
++    VkEnumerateInstanceExtensionPropertiesChain chain_tail = {
++        .header = {
++            .type = VK_CHAIN_TYPE_ENUMERATE_INSTANCE_EXTENSION_PROPERTIES,
++            .version = VK_CURRENT_CHAIN_VERSION,
++            .size = sizeof(chain_tail),
++        },
++        .pfnNextLayer = &terminator_EnumerateInstanceExtensionProperties,
++        .pNextLink = NULL,
++    };
++    VkEnumerateInstanceExtensionPropertiesChain *chain_head = &chain_tail;
++
++    // Get the implicit layers
++    struct loader_layer_list layers;
++    memset(&layers, 0, sizeof(layers));
++    loader_implicit_layer_scan(NULL, &layers);
++
++    // We'll need to save the dl handles so we can close them later
++    loader_platform_dl_handle *libs = malloc(sizeof(loader_platform_dl_handle) * layers.count);
++    if (libs == NULL) {
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++    }
++    size_t lib_count = 0;
+ 
+-        loader_layer_scan(NULL, &instance_layers);
+-        for (uint32_t i = 0; i < instance_layers.count; i++) {
+-            struct loader_layer_properties *props = &instance_layers.list[i];
+-            if (strcmp(props->info.layerName, pLayerName) == 0) {
+-                global_ext_list = &props->instance_extension_list;
+-                break;
+-            }
++    // Prepend layers onto the chain if they implment this entry point
++    for (uint32_t i = 0; i < layers.count; ++i) {
++        if (!loader_is_implicit_layer_enabled(NULL, layers.list + i) ||
++            layers.list[i].pre_instance_functions.enumerate_instance_extension_properties[0] == '\0') {
++            continue;
+         }
+-    } else {
+-        // Scan/discover all ICD libraries
+-        memset(&icd_tramp_list, 0, sizeof(struct loader_icd_tramp_list));
+-        res = loader_icd_scan(NULL, &icd_tramp_list);
+-        if (VK_SUCCESS != res) {
+-            goto out;
+-        }
+-        // Get extensions from all ICD's, merge so no duplicates
+-        res = loader_get_icd_loader_instance_extensions(NULL, &icd_tramp_list, &local_ext_list);
+-        if (VK_SUCCESS != res) {
+-            goto out;
++
++        loader_platform_dl_handle layer_lib = loader_platform_open_library(layers.list[i].lib_name);
++        libs[lib_count++] = layer_lib;
++        void* pfn = loader_platform_get_proc_address(layer_lib, layers.list[i].pre_instance_functions.enumerate_instance_extension_properties);
++        if (pfn == NULL) {
++            loader_log(NULL, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0, __FUNCTION__ ": Unable to resolve symbol \"%s\" in implicit layer library \"%s\"", layers.list[i].pre_instance_functions.enumerate_instance_extension_properties, layers.list[i].lib_name);
++            continue;
+         }
+-        loader_scanned_icd_clear(NULL, &icd_tramp_list);
+ 
+-        // Append enabled implicit layers.
+-        loader_implicit_layer_scan(NULL, &instance_layers);
+-        for (uint32_t i = 0; i < instance_layers.count; i++) {
+-            if (!loader_is_implicit_layer_enabled(NULL, &instance_layers.list[i])) {
+-                continue;
+-            }
+-            struct loader_extension_list *ext_list = &instance_layers.list[i].instance_extension_list;
+-            loader_add_to_ext_list(NULL, &local_ext_list, ext_list->count, ext_list->list);
++        VkEnumerateInstanceExtensionPropertiesChain *chain_link = malloc(sizeof(VkEnumerateInstanceExtensionPropertiesChain));
++        if (chain_link == NULL) {
++            res = VK_ERROR_OUT_OF_HOST_MEMORY;
++            break;
+         }
+ 
+-        global_ext_list = &local_ext_list;
+-    }
++        chain_link->header.type = VK_CHAIN_TYPE_ENUMERATE_INSTANCE_EXTENSION_PROPERTIES;
++        chain_link->header.version = VK_CURRENT_CHAIN_VERSION;
++        chain_link->header.size = sizeof(*chain_link);
++        chain_link->pfnNextLayer = pfn;
++        chain_link->pNextLink = chain_head;
+ 
+-    if (global_ext_list == NULL) {
+-        res = VK_ERROR_LAYER_NOT_PRESENT;
+-        goto out;
++        chain_head = chain_link;
+     }
+ 
+-    if (pProperties == NULL) {
+-        *pPropertyCount = global_ext_list->count;
+-        goto out;
++    // Call down the chain
++    if (res == VK_SUCCESS) {
++        res = chain_head->pfnNextLayer(chain_head->pNextLink, pLayerName, pPropertyCount, pProperties);
+     }
+ 
+-    copy_size = *pPropertyCount < global_ext_list->count ? *pPropertyCount : global_ext_list->count;
+-    for (uint32_t i = 0; i < copy_size; i++) {
+-        memcpy(&pProperties[i], &global_ext_list->list[i], sizeof(VkExtensionProperties));
++    // Tear down the chain
++    while (chain_head != &chain_tail) {
++        VkEnumerateInstanceExtensionPropertiesChain *holder = chain_head;
++        chain_head = (VkEnumerateInstanceExtensionPropertiesChain*) chain_head->pNextLink;
++        free(holder);
+     }
+-    *pPropertyCount = copy_size;
+ 
+-    if (copy_size < global_ext_list->count) {
+-        res = VK_INCOMPLETE;
+-        goto out;
++    // Close the dl handles
++    for (size_t i = 0; i < lib_count; ++i) {
++        loader_platform_close_library(libs[i]);
+     }
++    free(libs);
+ 
+-out:
+-
+-    loader_destroy_generic_list(NULL, (struct loader_generic_list *)&local_ext_list);
+-    loader_delete_layer_properties(NULL, &instance_layers);
+     return res;
+ }
+ 
+-LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
+-                                                                                VkLayerProperties *pProperties) {
+-    VkResult result = VK_SUCCESS;
+-    struct loader_layer_list instance_layer_list;
+-    tls_instance = NULL;
++LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(
++    uint32_t *pPropertyCount, VkLayerProperties *pProperties) {
+ 
++    tls_instance = NULL;
+     loader_platform_thread_once(&once_init, loader_initialize);
+ 
+-    uint32_t copy_size;
++    // We know we need to call at least the terminator
++    VkResult res = VK_SUCCESS;
++    VkEnumerateInstanceLayerPropertiesChain chain_tail = {
++        .header = {
++        .type = VK_CHAIN_TYPE_ENUMERATE_INSTANCE_LAYER_PROPERTIES,
++        .version = VK_CURRENT_CHAIN_VERSION,
++        .size = sizeof(chain_tail),
++    },
++    .pfnNextLayer = &terminator_EnumerateInstanceLayerProperties,
++    .pNextLink = NULL,
++    };
++    VkEnumerateInstanceLayerPropertiesChain *chain_head = &chain_tail;
++
++    // Get the implicit layers
++    struct loader_layer_list layers;
++    memset(&layers, 0, sizeof(layers));
++    loader_implicit_layer_scan(NULL, &layers);
++
++    // We'll need to save the dl handles so we can close them later
++    loader_platform_dl_handle *libs = malloc(sizeof(loader_platform_dl_handle) * layers.count);
++    if (libs == NULL) {
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++    }
++    size_t lib_count = 0;
+ 
+-    // Get layer libraries
+-    memset(&instance_layer_list, 0, sizeof(instance_layer_list));
+-    loader_layer_scan(NULL, &instance_layer_list);
++    // Prepend layers onto the chain if they implment this entry point
++    for (uint32_t i = 0; i < layers.count; ++i) {
++        if (!loader_is_implicit_layer_enabled(NULL, layers.list + i) ||
++            layers.list[i].pre_instance_functions.enumerate_instance_layer_properties[0] == '\0') {
++            continue;
++        }
+ 
+-    if (pProperties == NULL) {
+-        *pPropertyCount = instance_layer_list.count;
+-        goto out;
+-    }
++        loader_platform_dl_handle layer_lib = loader_platform_open_library(layers.list[i].lib_name);
++        libs[lib_count++] = layer_lib;
++        void* pfn = loader_platform_get_proc_address(layer_lib, layers.list[i].pre_instance_functions.enumerate_instance_layer_properties);
++        if (pfn == NULL) {
++            loader_log(NULL, VK_DEBUG_REPORT_WARNING_BIT_EXT, 0, __FUNCTION__ ": Unable to resolve symbol \"%s\" in implicit layer library \"%s\"", layers.list[i].pre_instance_functions.enumerate_instance_layer_properties, layers.list[i].lib_name);
++            continue;
++        }
+ 
+-    copy_size = (*pPropertyCount < instance_layer_list.count) ? *pPropertyCount : instance_layer_list.count;
+-    for (uint32_t i = 0; i < copy_size; i++) {
+-        memcpy(&pProperties[i], &instance_layer_list.list[i].info, sizeof(VkLayerProperties));
++        VkEnumerateInstanceLayerPropertiesChain *chain_link = malloc(sizeof(VkEnumerateInstanceLayerPropertiesChain));
++        if (chain_link == NULL) {
++            res = VK_ERROR_OUT_OF_HOST_MEMORY;
++            break;
++        }
++
++        chain_link->header.type = VK_CHAIN_TYPE_ENUMERATE_INSTANCE_LAYER_PROPERTIES;
++        chain_link->header.version = VK_CURRENT_CHAIN_VERSION;
++        chain_link->header.size = sizeof(*chain_link);
++        chain_link->pfnNextLayer = pfn;
++        chain_link->pNextLink = chain_head;
++
++        chain_head = chain_link;
+     }
+ 
+-    *pPropertyCount = copy_size;
++    // Call down the chain
++    if (res == VK_SUCCESS) {
++        res = chain_head->pfnNextLayer(chain_head->pNextLink, pPropertyCount, pProperties);
++    }
+ 
+-    if (copy_size < instance_layer_list.count) {
+-        result = VK_INCOMPLETE;
+-        goto out;
++    // Tear down the chain
++    while (chain_head != &chain_tail) {
++        VkEnumerateInstanceLayerPropertiesChain *holder = chain_head;
++        chain_head = (VkEnumerateInstanceLayerPropertiesChain*) chain_head->pNextLink;
++        free(holder);
+     }
+ 
+-out:
++    // Close the dl handles
++    for (size_t i = 0; i < lib_count; ++i) {
++        loader_platform_close_library(libs[i]);
++    }
++    free(libs);
+ 
+-    loader_delete_layer_properties(NULL, &instance_layer_list);
+-    return result;
++    return res;
+ }
+ 
+ LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+
+
+
+
+diff --git a/scripts/loader_extension_generator.py b/scripts/loader_extension_generator.py
+index 84cc4ca..370112d 100644
+--- a/scripts/loader_extension_generator.py
++++ b/scripts/loader_extension_generator.py
+@@ -44,6 +44,9 @@ DEVICE_CMDS_NEED_TERM = ['vkGetDeviceProcAddr',
+                          'vkDebugMarkerSetObjectTagEXT',
+                          'vkDebugMarkerSetObjectNameEXT']
+ 
++PRE_INSTANCE_FUNCTIONS = ['vkEnumerateInstanceExtensionProperties',
++                          'vkEnumerateInstanceLayerProperties']
++
+ #
+ # LoaderExtensionGeneratorOptions - subclass of GeneratorOptions.
+ class LoaderExtensionGeneratorOptions(GeneratorOptions):
+@@ -655,6 +658,9 @@ class LoaderExtensionOutputGenerator(OutputGenerator):
+                 new_terminator = cur_cmd.cdecl
+                 mod_string = new_terminator.replace("VKAPI_CALL vk", "VKAPI_CALL terminator_")
+ 
++                if cur_cmd.name in PRE_INSTANCE_FUNCTIONS:
++                    mod_string = mod_string.replace(cur_cmd.name[2:] + '(\n', cur_cmd.name[2:] + '(\n    const Vk' + cur_cmd.name[2:] + 'Chain* chain,\n')
++
+                 if (cur_cmd.protect != None):
+                     terminators += '#ifdef %s\n' % cur_cmd.protect
+ 

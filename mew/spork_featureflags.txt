@@ -1,0 +1,19 @@
+"bufferFeatures": 8             0x0008
+"bufferFeatures": 64            0x0040
+"bufferFeatures": 72            0x0048
+"bufferFeatures": 88            0x0058
+"bufferFeatures": 120           0x0078
+
+"linearTilingFeatures": 50177,  0xc401
+"linearTilingFeatures": 54273,  0xd401
+
+"optimalTilingFeatures": 50177, 0xc401
+"optimalTilingFeatures": 50689, 0xc601
+"optimalTilingFeatures": 52355, 0xcc6f
+"optimalTilingFeatures": 52359, 0xcc87
+"optimalTilingFeatures": 54273, 0xd401
+"optimalTilingFeatures": 54785,
+"optimalTilingFeatures": 56705,
+"optimalTilingFeatures": 56707, 0xdd83
+"optimalTilingFeatures": 56711, 0xdd87
+
