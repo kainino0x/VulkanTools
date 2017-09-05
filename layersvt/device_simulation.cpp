@@ -417,6 +417,11 @@ VkResult EnumerateAll(std::vector<T> *vect, std::function<VkResult(uint32_t *, T
     return result;
 }
 
+template <typename T>
+void VectorAppend(T *dst, const T *src) {
+    dst->insert(dst->end(), src->begin(), src->end());
+}
+
 // Global variables //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 std::mutex global_lock;  // Enforce thread-safety for this layer's containers.
@@ -426,8 +431,10 @@ uint32_t loader_layer_iface_version = CURRENT_LOADER_LAYER_INTERFACE_VERSION;
 typedef std::vector<VkQueueFamilyProperties> ArrayOfVkQueueFamilyProperties;
 typedef std::unordered_map<uint32_t /*VkFormat*/, VkFormatProperties> ArrayOfVkFormatProperties;
 typedef std::vector<VkLayerProperties> ArrayOfVkLayerProperties;
+typedef std::vector<VkExtensionProperties> ArrayOfVkExtensionProperties;
 
 ArrayOfVkLayerProperties instance_arrayof_layer_properties;
+ArrayOfVkExtensionProperties instance_arrayof_extension_properties;
 
 // FormatProperties utilities ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -476,6 +483,7 @@ class PhysicalDeviceData {
     ArrayOfVkQueueFamilyProperties arrayof_queue_family_properties_;
     ArrayOfVkFormatProperties arrayof_format_properties_;
     // NOTE: There is no ArrayOfVkLayerProperties for PhysicalDevices; layers are per-Instance only.
+    ArrayOfVkExtensionProperties arrayof_extension_properties_;
 
    private:
     PhysicalDeviceData() = delete;
@@ -525,6 +533,8 @@ class JsonLoader {
     void GetValue(const Json::Value &parent, int index, VkQueueFamilyProperties *dest);
     void GetValue(const Json::Value &parent, int index, DevsimFormatProperties *dest);
     void GetValue(const Json::Value &parent, const char *name, VkLayerProperties *dest);
+    void GetValue(const Json::Value &parent, const char *name, ArrayOfVkLayerProperties *dest);
+    void GetValue(const Json::Value &parent, const char *name, VkExtensionProperties *dest);
 
     // For use as warn_func in GET_VALUE_WARN().  Return true if warning occurred.
     static bool WarnIfGreater(const char *name, const uint64_t new_value, const uint64_t old_value) {
@@ -730,6 +740,20 @@ class JsonLoader {
         return -1;
     }
 
+    int GetArray(const Json::Value &parent, const char *name, ArrayOfVkExtensionProperties *dest) {
+        /*
+        // TODO
+        DebugPrintf("\t\tJsonLoader::GetValue(ArrayOfVkExtensionProperties)\n");
+        const Json::Value value = parent[name];
+        if (value.type() != Json::arrayValue) {
+            return;
+        }
+    }
+
+        */
+        return -1;
+    }
+
     PhysicalDeviceData &pdd_;
 };
 
@@ -785,6 +809,7 @@ bool JsonLoader::LoadFile(const char *filename) {
             GetArray(root, "ArrayOfVkFormatProperties", &pdd_.arrayof_format_properties_);
             // How to handle the ArrayOfVkLayerProperties section of devsim json?  Layers are not per-Device.
             // GetValue(root, "ArrayOfVkLayerProperties", ???);
+            GetArray(root, "ArrayOfVkExtensionProperties", &pdd_.arrayof_extension_properties_);
             break;
         case SchemaId::kUnknown:
         default:
@@ -1108,6 +1133,17 @@ void JsonLoader::GetValue(const Json::Value &parent, const char *name, VkLayerPr
     GET_ARRAY(description);  // size < VK_MAX_DESCRIPTION_SIZE
 }
 
+void JsonLoader::GetValue(const Json::Value &parent, const char *name, VkExtensionProperties *dest) {
+    const Json::Value value = parent[name];
+    if (value.type() != Json::objectValue) {
+        return;
+    }
+    DebugPrintf("\t\tJsonLoader::GetValue(VkExtensionProperties)\n");
+    // TODO
+    GET_ARRAY(extensionName);  // size < VK_MAX_EXTENSION_NAME_SIZE
+    GET_VALUE(specVersion);
+}
+
 #undef GET_VALUE
 #undef GET_ARRAY
 
@@ -1181,6 +1217,25 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo *pCreat
     instance_arrayof_layer_properties.push_back(null_layer);
 #endif
 
+#ifdef ENABLE_INSTANCE_EXTENSIONS
+    // Get list of instance extensions from all layers, including null_layer
+    assert(dt->EnumerateInstanceExtensionProperties);
+    instance_arrayof_extension_properties.clear();
+    for (const auto &layer : instance_arrayof_layer_properties) {
+        const char *const layer_name = (layer.layerName[0]) ? layer.layerName : nullptr;
+        ArrayOfVkExtensionProperties instance_extensions;
+        result = EnumerateAll<VkExtensionProperties>(&instance_extensions, [&](uint32_t *count, VkExtensionProperties *results) {
+            return dt->EnumerateInstanceExtensionProperties(layer_name, count, results);
+        });
+        if (result) {
+            return result;
+        }
+        // Append this layer's extensions to the instance extension list.
+        // TODO should this keep extensions separate by layer, rather than one be list?
+        VectorAppend(&instance_arrayof_extension_properties, &instance_extensions);
+    }
+#endif
+
     std::vector<VkPhysicalDevice> physical_devices;
     result = EnumerateAll<VkPhysicalDevice>(&physical_devices, [&](uint32_t *count, VkPhysicalDevice *results) {
         return dt->EnumeratePhysicalDevices(*pInstance, count, results);
@@ -1211,6 +1266,25 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo *pCreat
                 pdd.arrayof_format_properties_.insert({format, format_properties});
             }
         }
+
+#ifdef ENABLE_DEVICE_EXTENSIONS
+        // Get list of device extensions from all layers, including null_layer
+        assert(dt->EnumerateDeviceExtensionProperties);
+        pdd.arrayof_extension_properties_.clear();
+        for (const auto &layer : instance_arrayof_layer_properties) {
+            const char *const layer_name = (layer.layerName[0]) ? layer.layerName : nullptr;
+            ArrayOfVkExtensionProperties device_extensions;
+            result = EnumerateAll<VkExtensionProperties>(&device_extensions, [&](uint32_t *count, VkExtensionProperties *results) {
+                return dt->EnumerateDeviceExtensionProperties(physical_device, layer_name, count, results);
+            });
+            if (result) {
+                return result;
+            }
+            // Append this layer's extensions to the device extension list.
+            // TODO should this keep extensions separate by layer, rather than one be list?
+            VectorAppend(&pdd.arrayof_extension_properties_, &device_extensions);
+        }
+#endif
 
 #ifdef ENABLE_INSTANCE_LAYERS
         // Remove the temporary null_layer
@@ -1302,6 +1376,7 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumerateInstanceExtensionProperties(const char *
     if (pLayerName && !strcmp(pLayerName, kOurLayerName)) {
         return EnumerateProperties(kExtensionPropertiesCount, kExtensionProperties, pCount, pProperties);
     }
+    // TODO should this terminate or call-down?
     return VK_ERROR_LAYER_NOT_PRESENT;
 }
 
@@ -1313,6 +1388,7 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumerateDeviceExtensionProperties(VkPhysicalDevi
     if (pLayerName && !strcmp(pLayerName, kOurLayerName)) {
         return EnumerateProperties(kExtensionPropertiesCount, kExtensionProperties, pCount, pProperties);
     }
+    // TODO should this terminate or call-down?
     return dt->EnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pCount, pProperties);
 }
 
