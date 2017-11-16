@@ -60,6 +60,7 @@ COMMON_CODEGEN = """
  * limitations under the License.
  *
  * Author: Lenny Komow <lenny@lunarg.com>
+ * Author: Shannon McPherson <shannon@lunarg.com>
  */
 
 /*
@@ -71,10 +72,38 @@ COMMON_CODEGEN = """
 
 //============================= Dump Functions ==============================//
 
-@foreach function where('{funcReturn}' != 'void' and not '{funcName}' in ['vkGetDeviceProcAddr', 'vkGetInstanceProcAddr'])
+@foreach function where('{funcReturn}' != 'void' and not '{funcName}' in ['vkGetDeviceProcAddr', 'vkGetInstanceProcAddr', 'vkDebugMarkerSetObjectNameEXT'])
 inline void dump_{funcName}(ApiDumpInstance& dump_inst, {funcReturn} result, {funcTypedParams})
 {{
     loader_platform_thread_lock_mutex(dump_inst.outputMutex());
+    switch(dump_inst.settings().format())
+    {{
+    case ApiDumpFormat::Text:
+        dump_text_{funcName}(dump_inst, result, {funcNamedParams});
+        break;
+    case ApiDumpFormat::Html:
+        dump_html_{funcName}(dump_inst, result, {funcNamedParams});
+        break;
+    }}
+    loader_platform_thread_unlock_mutex(dump_inst.outputMutex());
+}}
+@end function
+
+@foreach function where('{funcReturn}' != 'void' and '{funcName}' in ['vkDebugMarkerSetObjectNameEXT'])
+inline void dump_{funcName}(ApiDumpInstance& dump_inst, {funcReturn} result, {funcTypedParams})
+{{
+    // This is a SPECIAL function       -       TODO Take this comment out
+    loader_platform_thread_lock_mutex(dump_inst.outputMutex());
+
+    if (pNameInfo->pObjectName)
+    {{
+        dump_inst.objectNameMap->insert(std::make_pair<uint64_t, std::string>((uint64_t &&)pNameInfo->object, pNameInfo->pObjectName));
+    }}
+    else
+    {{
+        dump_inst.objectNameMap->erase(pNameInfo->object);
+    }}
+
     switch(dump_inst.settings().format())
     {{
     case ApiDumpFormat::Text:
@@ -268,7 +297,7 @@ VK_LAYER_EXPORT VKAPI_ATTR {funcReturn} VKAPI_CALL {funcName}({funcTypedParams})
 
 // Autogen device functions
 
-@foreach function where('{funcType}' == 'device' and '{funcReturn}' != 'void' and '{funcName}' not in ['vkDestroyDevice', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkQueuePresentKHR', 'vkGetDeviceProcAddr', 'vkDebugMarkerSetObjectNameEXT'])
+@foreach function where('{funcType}' == 'device' and '{funcReturn}' != 'void' and '{funcName}' not in ['vkDestroyDevice', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkQueuePresentKHR', 'vkGetDeviceProcAddr'])
 VK_LAYER_EXPORT VKAPI_ATTR {funcReturn} VKAPI_CALL {funcName}({funcTypedParams})
 {{
     {funcReturn} result = device_dispatch_table({funcDispatchParam})->{funcShortName}({funcNamedParams});
@@ -278,7 +307,7 @@ VK_LAYER_EXPORT VKAPI_ATTR {funcReturn} VKAPI_CALL {funcName}({funcTypedParams})
 }}
 @end function
 
-@foreach function where('{funcType}' == 'device' and '{funcReturn}' == 'void' and '{funcName}' not in ['vkDestroyDevice', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkGetDeviceProcAddr', 'vkDebugMarkerSetObjectNameEXT'])
+@foreach function where('{funcType}' == 'device' and '{funcReturn}' == 'void' and '{funcName}' not in ['vkDestroyDevice', 'vkEnumerateInstanceExtensionProperties', 'vkEnumerateInstanceLayerProperties', 'vkGetDeviceProcAddr'])
 VK_LAYER_EXPORT VKAPI_ATTR {funcReturn} VKAPI_CALL {funcName}({funcTypedParams})
 {{
     device_dispatch_table({funcDispatchParam})->{funcShortName}({funcNamedParams});
@@ -969,14 +998,14 @@ TRACKED_STATE = {
         'if(result == VK_SUCCESS)\n' +
             'ApiDumpInstance::current().addCmdBuffers(\n' +
                 'device,\n' +
-                'pAllocateInfo->commandPool,\n' + 
+                'pAllocateInfo->commandPool,\n' +
                 'std::vector<VkCommandBuffer>(pCommandBuffers, pCommandBuffers + pAllocateInfo->commandBufferCount),\n' +
                 'pAllocateInfo->level\n'
             ');',
-    'vkDestroyCommandPool': 
+    'vkDestroyCommandPool':
         'ApiDumpInstance::current().eraseCmdBufferPool(device, commandPool);'
     ,
-    'vkFreeCommandBuffers': 
+    'vkFreeCommandBuffers':
         'ApiDumpInstance::current().eraseCmdBuffers(device, commandPool, std::vector<VkCommandBuffer>(pCommandBuffers, pCommandBuffers + commandBufferCount));'
     ,
 }
