@@ -4428,6 +4428,8 @@ static inline PFN_vkVoidFunction layer_intercept_proc(const char* name) {
     if (!strcmp(name, "DestroyIndirectCommandsLayoutNVX")) return(PFN_vkVoidFunction)__HOOKED_vkDestroyIndirectCommandsLayoutNVX;
     if (!strcmp(name, "DestroyObjectTableNVX")) return (PFN_vkVoidFunction)__HOOKED_vkDestroyObjectTableNVX;
     if (!strcmp(name, "UnregisterObjectsNVX")) return (PFN_vkVoidFunction)__HOOKED_vkUnregisterObjectsNVX;
+    if (!strcmp(name, "BindBufferMemory2KHR")) return (PFN_vkVoidFunction)__HOOKED_vkBindBufferMemory2KHR;
+    if (!strcmp(name, "BindImageMemory2KHR")) return (PFN_vkVoidFunction)__HOOKED_vkBindImageMemory2KHR;
 
     return NULL;
 }
