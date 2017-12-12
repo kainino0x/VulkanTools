@@ -1,4 +1,4 @@
-#! /bin/bash -x
+#! /bin/bash
 # Simple test of devsim layer
 # Uses 'jq' v1.5 (https://stedolan.github.io/jq/) to extract sections of
 # test's JSON output and reformat for consistent comparison with gold file.
