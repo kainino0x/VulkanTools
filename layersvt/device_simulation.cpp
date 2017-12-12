@@ -1503,11 +1503,13 @@ VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstance
     return CreateInstance(pCreateInfo, pAllocator, pInstance);
 }
 
+// TODO "vkEnumerateInstanceLayerProperties": "devsimEnumerateInstanceLayerProperties"
 VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t *pCount,
                                                                                   VkLayerProperties *pProperties) {
     return EnumerateInstanceLayerProperties(pCount, pProperties);
 }
 
+// TODO "vkEnumerateInstanceExtensionProperties": "devsimEnumerateInstanceExtensionProperties",
 VK_LAYER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pCount,
                                                                                       VkExtensionProperties *pProperties) {
     return EnumerateInstanceExtensionProperties(pLayerName, pCount, pProperties);
